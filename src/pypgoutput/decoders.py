@@ -1,3 +1,5 @@
+import sys
+
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone, timedelta
 
@@ -27,7 +29,7 @@ def decode_unknown_length_string(_buffer, _position):
             character = convert_bytes_to_utf8(_buffer[_position:_position+1])
             the_string += character
         except Exception as e:
-            print("could not decode string, assume end of string")
+            sys.stderr.write("could not decode string, assume end of string\n")
         finally:
             _position += 1
     return _position, the_string
@@ -51,7 +53,7 @@ def decode_message(_input_bytes):
     elif first_byte == 'T':
         output = Truncate(_input_bytes)
     else:
-        print(f"warning unrecognised message {_input_bytes}")
+        sys.stderr.write("warning unrecognised message {_input_bytes}\n")
         output = None
     return output
 
