@@ -1,16 +1,24 @@
 import sys
-
-from abc import ABC, abstractmethod
-from datetime import datetime, timezone, timedelta
-
-
+import pytz
+import struct
+from datetime import datetime, timedelta
 
 def convert_pg_ts(_ts_in_microseconds):
-    ts = datetime(2000, 1, 1, 0, 0, 0, 0, tzinfo=timezone.utc) 
+    ts = datetime(2000, 1, 1, 0, 0, 0, 0, tzinfo=pytz.UTC)
     return ts + timedelta(microseconds=_ts_in_microseconds)
 
 def convert_bytes_to_int(_in_bytes):
-    return int.from_bytes(_in_bytes, byteorder='big', signed=True)    
+    r'''
+    >>> convert_bytes_to_int(b'8nnn')
+    946761326
+    >>> convert_bytes_to_int(b'\x00')
+    0
+    >>> convert_bytes_to_int(b'\x00v')
+    118
+    >>> convert_bytes_to_int(b'\x00\x00\x00\x00\x01|\x9f\x18')
+    24944408
+    '''
+    return struct.unpack({8: '>q', 4: '>i', 2: '>h', 1: '>b'}[len(_in_bytes)], _in_bytes)[0]
 
 def convert_bytes_to_utf8(_in_bytes):
     return (_in_bytes).decode('utf-8')
@@ -53,22 +61,20 @@ def decode_message(_input_bytes):
     elif first_byte == 'T':
         output = Truncate(_input_bytes)
     else:
-        sys.stderr.write("warning unrecognised message {_input_bytes}\n")
+        sys.stderr.write("warning unrecognised message %s\n" % _input_bytes)
         output = None
     return output
 
-class PgoutputMessage(ABC):
+class PgoutputMessage(object):
 
     def __init__(self, buffer):
         self.buffer = buffer
         self.byte1 = convert_bytes_to_utf8(self.buffer[0:1])
         self.decode_buffer()
 
-    @abstractmethod
     def decode_buffer(self):
         pass
 
-    @abstractmethod
     def __repr__(self):
         pass
 
@@ -90,8 +96,8 @@ class Begin(PgoutputMessage):
         return self
 
     def __repr__(self):
-        return f"BEGIN \n\tbyte1: '{self.byte1}', \n\tfinal_tx_lsn : {self.final_tx_lsn}, " \
-               f"\n\tcommit_tx_ts {self.commit_tx_ts}, \n\ttx_xid : {self.tx_xid}"
+        return "BEGIN \n\tbyte1: '%s', \n\tfinal_tx_lsn : %s, \n\tcommit_tx_ts %s, \n\ttx_xid : %s" % (
+               self.byte1, self.final_tx_lsn, self.commit_tx_ts, self.tx_xid)
 
 
 class Commit(PgoutputMessage):
@@ -113,8 +119,8 @@ class Commit(PgoutputMessage):
         return self
 
     def __repr__(self):
-        return f"COMMIT \n\tbyte1: {self.byte1}, \n\tflags {self.flags}, \n\tlsn_commit : {self.lsn_commit} " \
-               f"\n\tfinal_tx_lsn : {self.final_tx_lsn}, \n\tcommit_tx_ts {self.commit_tx_ts}"     
+        return "COMMIT \n\tbyte1: %s, \n\tflags %s, \n\tlsn_commit : %s \n\tfinal_tx_lsn : %s, \n\tcommit_tx_ts %s" % (
+            self.byte1, self.flags, self.lsn_commit, self.final_tx_lsn, self.commit_tx_ts)
 
 
 class Origin:
@@ -173,10 +179,12 @@ class Relation(PgoutputMessage):
 
 
     def __repr__(self):
-        return f"RELATION \n\tbyte1 : '{self.byte1}', \n\trelation_id : {self.relation_id}" \
-               f",\n\tnamespace/schema : '{self.namespace}',\n\trelation_name : '{self.relation_name}'" \
-               f",\n\treplica_identity_setting : '{self.replica_identity_setting}',\n\tn_columns : {self.n_columns} " \
-               f",\n\tcolumns : {self.columns}"
+        return ("RELATION \n\tbyte1 : '%s', \n\trelation_id : %s"
+               ",\n\tnamespace/schema : '%s',\n\trelation_name : '%s'"
+               ",\n\treplica_identity_setting : '%s',\n\tn_columns : %s "
+               ",\n\tcolumns : %s") % (
+            self.byte1, self.relation_id, self.namespace, self.relation_name, self.replica_identity_setting,
+            self.n_columns, self.columns, )
 
 # renamed to PgType to not use "type" name
 class PgType:
@@ -231,7 +239,7 @@ class TupleData:
         return self
 
     def __repr__(self):
-        return f"( n_columns : {self.n_columns}, data : {self.column_data})"
+        return "( n_columns : %s, data : %s)" % (self.n_columns, self.column_data)
 
 class Insert(PgoutputMessage):
     """
@@ -242,15 +250,16 @@ class Insert(PgoutputMessage):
     """
     def decode_buffer(self):
         if self.byte1 != 'I':
-            raise Exception(f"first byte in buffer does not match Insert message (expected 'I', got '{self.byte1}'")
+            raise Exception("first byte in buffer does not match Insert message (expected 'I', got '%s'" % self.byte1)
         self.relation_id = convert_bytes_to_int(self.buffer[1:5])
         self.new_tuple_byte = convert_bytes_to_utf8(self.buffer[5:6])
         self.tuple_data = TupleData(self.buffer[6:])
         return self
 
     def __repr__(self):
-        return f"INSERT \n\tbyte1: '{self.byte1}', \n\trelation_id : {self.relation_id} " \
-               f"\n\tnew tuple byte: '{self.new_tuple_byte}', \n\ttuple_data : {self.tuple_data}"
+        return ("INSERT \n\tbyte1: '%s', \n\trelation_id : %s "
+               "\n\tnew tuple byte: '%s', \n\ttuple_data : %s") % (
+               self.byte1, self.relation_id, self.new_tuple_byte, self.tuple_data)
 
 class Update(PgoutputMessage):
     """
@@ -269,7 +278,7 @@ class Update(PgoutputMessage):
         self.new_tuple_identifier = None
         self.old_tuple = None
         if self.byte1 != 'U':
-            raise Exception(f"first byte in buffer does not match Update message (expected 'U', got '{self.byte1}'")
+            raise Exception("first byte in buffer does not match Update message (expected 'U', got '%s'" % self.byte1)
         self.relation_id = convert_bytes_to_int(self.buffer[1:5])
 
         # i.e., K, O or N
@@ -285,15 +294,18 @@ class Update(PgoutputMessage):
         
         self.new_tuple_identifier = convert_bytes_to_utf8(self.buffer[buffer_pos:buffer_pos+1])
         if self.new_tuple_identifier != 'N':
-            raise Exception(f"did not find new_tuple_identifier ('N') at pos : {buffer_pos}, found : '{self.new_tuple_identifier}'")
+            raise Exception("did not find new_tuple_identifier ('N') at pos : %s, found : '%s'" % (
+                buffer_pos, self.new_tuple_identifier))
         buffer_pos += 1
         self.new_tuple = TupleData(self.buffer[buffer_pos:])
         return self
 
     def __repr__(self):
-        return f"UPDATE \n\tbyte1: '{self.byte1}', \n\trelation_id : {self.relation_id} " \
-               f" \n\toptional_tuple_identifier : '{self.optional_tuple_identifier}', \n\toptional_old_tuple_data : {self.old_tuple} " \
-               f" \n\tnew_tuple_identifier : '{self.new_tuple_identifier}', \n\tnew_tuple : {self.new_tuple}"
+        return ("UPDATE \n\tbyte1: '%s', \n\trelation_id : %s "
+               " \n\toptional_tuple_identifier : '%s', \n\toptional_old_tuple_data : %s " \
+               " \n\tnew_tuple_identifier : '%s', \n\tnew_tuple : %s") % (
+            self.byte1, self.relation_id, self.optional_tuple_identifier, self.old_tuple, self.new_tuple_identifier,
+            self.new_tuple)
 
 class Delete(PgoutputMessage):
     """
@@ -307,19 +319,18 @@ class Delete(PgoutputMessage):
     """
     def decode_buffer(self):
         if self.byte1 != 'D':
-            raise Exception(f"first byte in buffer does not match Delete message (expected 'D', got '{self.byte1}'")
+            raise Exception("first byte in buffer does not match Delete message (expected 'D', got '%s'" % self.byte1)
         self.relation_id = convert_bytes_to_int(self.buffer[1:5])
         self.message_type = convert_bytes_to_utf8(self.buffer[5:6])
         if ((self.message_type != 'K') and (self.message_type != 'O')):
-            raise Exception(f"message type byte is not 'K' or 'O', got : '{self.message_type}'")
+            raise Exception("message type byte is not 'K' or 'O', got : '%s'" % self.message_type)
         self.tuple_data = TupleData(self.buffer[6:])
         return self
 
     def __repr__(self):
-        return f"DELETE \n\tbyte1: {self.byte1} \n\trelation_id : {self.relation_id} " \
-               f"\n\tmessage_type : {self.message_type} \n\ttuple_data : {self.tuple_data}"
-
-
+        return ("DELETE \n\tbyte1: %s \n\trelation_id : %s "
+               "\n\tmessage_type : %s \n\ttuple_data : %s") % (
+               self.byte1, self.relation_id, self.message_type, self.tuple_data)
 
 class Truncate(PgoutputMessage):
     """
@@ -331,7 +342,7 @@ class Truncate(PgoutputMessage):
     """
     def decode_buffer(self):
         if self.byte1 != 'T':
-            raise Exception(f"first byte in buffer does not match Truncate message (expected 'T', got '{self.byte1}'")
+            raise Exception("first byte in buffer does not match Truncate message (expected 'T', got '%s'" % self.byte1)
         self.number_of_relations = convert_bytes_to_int(self.buffer[1:5])
         self.option_bits = convert_bytes_to_int(self.buffer[5:6])
         self.relation_ids = []
@@ -342,5 +353,6 @@ class Truncate(PgoutputMessage):
             
 
     def __repr__(self):
-        return f"TRUNCATE \n\tbyte1: {self.byte1} \n\tn_relations : {self.number_of_relations} "\
-               f"option_bits : {self.option_bits}, relation_ids : {self.relation_ids}   "
+        return ("TRUNCATE \n\tbyte1: %s \n\tn_relations : %s "
+               "option_bits : %s, relation_ids : %s   ") % (
+               self.byte1, self.number_of_relations, self.option_bits, self.relation_ids)
